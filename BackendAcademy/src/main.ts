@@ -63,6 +63,18 @@ async function bootstrap() {
   // HTTP 413 (Payload Too Large) with a clear error message.
   const maxBodySize = configService.get<string>('MAX_BODY_SIZE', '1mb');
   app.use(express.json({ limit: maxBodySize }));
+  app.use((error: any, _req: any, res: any, next: any) => {
+    if (error instanceof SyntaxError && 'body' in error && error.status === 400 && 'type' in error) {
+      return res.status(400).json({
+        statusCode: 400,
+        code: 'VALIDATION_ERROR',
+        message: 'Malformed JSON payload',
+        fields: [{ field: 'body', errors: ['Invalid JSON syntax'] }],
+      });
+    }
+
+    return next(error);
+  });
 
   // Global validation pipe applied to all incoming request bodies/params:
   //  - whitelist: strips properties not defined on the target DTO

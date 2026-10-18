@@ -77,4 +77,19 @@ describe('DTO validation responses', () => {
       ]),
     );
   });
+
+  it('should return a safe 400 response for malformed JSON payloads', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/example')
+      .set('Content-Type', 'application/json')
+      .send('{invalid-json')
+      .expect(400);
+
+    expect(response.body).toMatchObject({
+      statusCode: 400,
+      code: 'VALIDATION_ERROR',
+      message: 'Malformed JSON payload',
+      fields: [{ field: 'body', errors: ['Invalid JSON syntax'] }],
+    });
+  });
 });
