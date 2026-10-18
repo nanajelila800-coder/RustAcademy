@@ -1,11 +1,40 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe, Logger } from '@nestjs/common';
+import { ValidationPipe, Logger, BadRequestException, ValidationError } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import * as express from 'express';
 import { AppModule } from './app.module';
+
+function mapValidationErrors(errors: ValidationError[]) {
+  const fields = errors.flatMap((error) => {
+    const messages = Object.values(error.constraints ?? {});
+
+    if (messages.length > 0) {
+      return [{ field: error.property, errors: messages }];
+    }
+
+    if (error.children && error.children.length > 0) {
+      return error.children.flatMap((child) => {
+        const childMessages = Object.values(child.constraints ?? {});
+        if (childMessages.length > 0) {
+          return [{ field: `${error.property}.${child.property}`, errors: childMessages }];
+        }
+
+        return [];
+      });
+    }
+
+    return [];
+  });
+
+  return {
+    code: 'VALIDATION_ERROR',
+    message: 'Validation failed',
+    fields,
+  };
+}
 
 // Application entry point: creates the Nest app, applies global
 // middleware/pipes, optionally sets up Swagger docs, and starts
@@ -45,6 +74,10 @@ async function bootstrap() {
       whitelist: true,
       transform: true,
       forbidNonWhitelisted: true,
+      exceptionFactory: (errors: ValidationError[]) => {
+        const payload = mapValidationErrors(errors);
+        return new BadRequestException(payload);
+      },
     }),
   );
   // Swagger docs default to enabled unless explicitly turned off via
