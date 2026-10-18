@@ -1,11 +1,33 @@
+import { randomUUID } from 'crypto';
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe, Logger, BadRequestException, ValidationError } from '@nestjs/common';
+import {
+  ValidationPipe,
+  Logger,
+  BadRequestException,
+  ValidationError,
+  Catch,
+  ArgumentsHost,
+  ExceptionFilter,
+  HttpException,
+  HttpStatus,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import * as express from 'express';
 import { AppModule } from './app.module';
+
+const REQUEST_ID_HEADER = 'x-request-id';
+
+function getRequestId(req: express.Request): string {
+  const existing = req.get(REQUEST_ID_HEADER) ?? req.get('x-correlation-id');
+  if (typeof existing === 'string' && existing.trim()) {
+    return existing.trim();
+  }
+
+  return randomUUID();
+}
 
 function mapValidationErrors(errors: ValidationError[]) {
   const fields = errors.flatMap((error) => {
@@ -36,6 +58,34 @@ function mapValidationErrors(errors: ValidationError[]) {
   };
 }
 
+@Catch()
+class RequestCorrelationExceptionFilter implements ExceptionFilter {
+  catch(exception: unknown, host: ArgumentsHost) {
+    const ctx = host.switchToHttp();
+    const response = ctx.getResponse<express.Response>();
+    const request = ctx.getRequest<express.Request>();
+    const requestId = getRequestId(request);
+
+    if (exception instanceof HttpException) {
+      const payload = exception.getResponse();
+      const normalized = typeof payload === 'string' ? { message: payload } : payload;
+
+      return response.status(exception.getStatus()).json({
+        ...(typeof normalized === 'object' && normalized !== null ? normalized : { message: String(normalized) }),
+        request_id: requestId,
+        correlationId: requestId,
+      });
+    }
+
+    return response.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
+      code: 'INTERNAL_SERVER_ERROR',
+      message: 'Internal server error',
+      request_id: requestId,
+      correlationId: requestId,
+    });
+  }
+}
+
 // Application entry point: creates the Nest app, applies global
 // middleware/pipes, optionally sets up Swagger docs, and starts
 // listening on the configured port.
@@ -62,14 +112,26 @@ async function bootstrap() {
   // env var (e.g., '5mb', '10mb'). Requests exceeding this limit return
   // HTTP 413 (Payload Too Large) with a clear error message.
   const maxBodySize = configService.get<string>('MAX_BODY_SIZE', '1mb');
+  app.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const requestId = getRequestId(req);
+    req.headers[REQUEST_ID_HEADER] = requestId;
+    res.setHeader(REQUEST_ID_HEADER, requestId);
+    res.setHeader('x-correlation-id', requestId);
+    (req as any).requestId = requestId;
+    (req as any).correlationId = requestId;
+    next();
+  });
   app.use(express.json({ limit: maxBodySize }));
-  app.use((error: any, _req: any, res: any, next: any) => {
+  app.use((error: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const requestId = getRequestId(req);
     if (error instanceof SyntaxError && 'body' in error && error.status === 400 && 'type' in error) {
       return res.status(400).json({
         statusCode: 400,
         code: 'VALIDATION_ERROR',
         message: 'Malformed JSON payload',
         fields: [{ field: 'body', errors: ['Invalid JSON syntax'] }],
+        request_id: requestId,
+        correlationId: requestId,
       });
     }
 
@@ -92,6 +154,7 @@ async function bootstrap() {
       },
     }),
   );
+  app.useGlobalFilters(new RequestCorrelationExceptionFilter());
   // Swagger docs default to enabled unless explicitly turned off via
   // the SWAGGER_ENABLED env var.
   const swaggerEnabled = configService.get<string>('SWAGGER_ENABLED', 'true') === 'true';
