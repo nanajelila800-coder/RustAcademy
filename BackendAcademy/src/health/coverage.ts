@@ -1,91 +1,64 @@
-import { ForbiddenException, Injectable, TooManyRequestsException } from '@nestjs/common';
+import { BadRequestException } from '@nestjs/common';
 
-export interface ChatMessage {
-  id: string;
-  userId: string;
-  channelId: string;
-  kind: 'dm' | 'room' | 'channel';
-  content: string;
-  createdAt: string;
+export const SUPPORTED_HEALTH_PROBES = ['liveness', 'readiness', 'startup'] as const;
+export const SUPPORTED_PROBES = SUPPORTED_HEALTH_PROBES;
+export type HealthProbe = (typeof SUPPORTED_HEALTH_PROBES)[number];
+export const DEFAULT_HEALTH_PROBE: HealthProbe = 'liveness';
+export const DEFAULT_PROBE = DEFAULT_HEALTH_PROBE;
+
+const PROBE_ALIASES: Record<HealthProbe, string[]> = {
+  liveness: ['liveness', 'live', 'alive'],
+  readiness: ['readiness', 'ready'],
+  startup: ['startup', 'start'],
+};
+
+export function isSupportedHealthProbe(value?: string | string[] | null): value is HealthProbe {
+  const normalized = normalizeProbeValue(value);
+  return SUPPORTED_HEALTH_PROBES.includes(normalized as HealthProbe);
 }
 
-export interface ModerationReport {
-  id: string;
-  reporterId: string;
-  messageId: string;
-  reason: string;
-  details: string;
-  status: 'open';
-  createdAt: string;
+export function normalizeProbeValue(value?: string | string[] | null): string {
+  const candidate = Array.isArray(value) ? value[0] : value;
+  return String(candidate ?? '').trim().toLowerCase();
 }
 
-@Injectable()
-export class ModerationService {
-  private readonly messages: ChatMessage[] = [];
-  private readonly reports: ModerationReport[] = [];
-  private readonly violations = new Map<string, number>();
-  private readonly mutedUntil = new Map<string, number>();
-  private readonly rateWindows = new Map<string, number[]>();
-  private nextId = 1;
+export function resolveHealthProbe(value?: string | string[] | null): HealthProbe {
+  const normalized = normalizeProbeValue(value);
+  if (!normalized) {
+    return DEFAULT_HEALTH_PROBE;
+  }
 
-  private readonly maxMessagesPerWindow = 20;
-  private readonly rateWindowMs = 60_000;
-  private readonly muteAfterViolations = 3;
-  private readonly muteDurationMs = 15 * 60_000;
-  private readonly abusiveWords = ['asshole', 'bitch', 'fuck', 'shit'];
-
-  sendMessage(input: Omit<ChatMessage, 'id' | 'createdAt'>): ChatMessage {
-    const now = Date.now();
-    this.assertRateLimit(input.userId, now);
-    const mutedUntil = this.mutedUntil.get(input.userId) ?? 0;
-    if (mutedUntil > now) {
-      throw new ForbiddenException(`User is muted until ${new Date(mutedUntil).toISOString()}`);
+  for (const [probe, aliases] of Object.entries(PROBE_ALIASES) as [HealthProbe, string[]][]) {
+    if (aliases.includes(normalized)) {
+      return probe;
     }
-
-    if (this.containsProfanity(input.content)) {
-      const count = (this.violations.get(input.userId) ?? 0) + 1;
-      this.violations.set(input.userId, count);
-      if (count >= this.muteAfterViolations) {
-        this.mutedUntil.set(input.userId, now + this.muteDurationMs);
-      }
-      throw new ForbiddenException('Message rejected by moderation');
-    }
-
-    const message: ChatMessage = { ...input, id: `msg_${this.nextId++}`, createdAt: new Date(now).toISOString() };
-    this.messages.push(message);
-    return message;
   }
 
-  report(input: Omit<ModerationReport, 'id' | 'status' | 'createdAt'>): ModerationReport {
-    const report: ModerationReport = {
-      ...input,
-      id: `report_${this.nextId++}`,
-      status: 'open',
-      createdAt: new Date().toISOString(),
-    };
-    this.reports.push(report);
-    return report;
-  }
-
-  getQueue(): ModerationReport[] {
-    return [...this.reports];
-  }
-
-  isMuted(userId: string): boolean {
-    return (this.mutedUntil.get(userId) ?? 0) > Date.now();
-  }
-
-  private containsProfanity(content: string): boolean {
-    const normalized = content.toLowerCase().replace(/[^a-z0-9]+/g, ' ');
-    return this.abusiveWords.some((word) => new RegExp(`\\b${word}\\b`).test(normalized));
-  }
-
-  private assertRateLimit(userId: string, now: number): void {
-    const recent = (this.rateWindows.get(userId) ?? []).filter((timestamp) => now - timestamp < this.rateWindowMs);
-    if (recent.length >= this.maxMessagesPerWindow) {
-      throw new TooManyRequestsException('Chat rate limit exceeded');
-    }
-    recent.push(now);
-    this.rateWindows.set(userId, recent);
-  }
+  throw new BadRequestException(
+    `Unsupported probe option: "${value ?? ''}". Supported values: ${SUPPORTED_HEALTH_PROBES.join(', ')}`,
+  );
 }
+
+export function parseHealthProbe(value?: string | string[] | null): HealthProbe {
+  return resolveHealthProbe(value);
+}
+
+export const validateHealthProbe = resolveHealthProbe;
+export const parseProbe = parseHealthProbe;
+export const normalizeHealthProbe = resolveHealthProbe;
+export const isValidProbeOption = isSupportedHealthProbe;
+
+export default {
+  SUPPORTED_HEALTH_PROBES,
+  SUPPORTED_PROBES,
+  DEFAULT_HEALTH_PROBE,
+  DEFAULT_PROBE,
+  isSupportedHealthProbe,
+  isValidProbeOption,
+  normalizeProbeValue,
+  normalizeHealthProbe,
+  resolveHealthProbe,
+  parseHealthProbe,
+  validateHealthProbe,
+  parseProbe,
+};

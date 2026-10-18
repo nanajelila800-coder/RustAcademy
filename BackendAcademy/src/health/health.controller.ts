@@ -1,15 +1,18 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
+import { resolveHealthProbe } from './coverage';
 
 @ApiTags('health')
 @Controller('health')
-//controller for health check endpoint
 export class HealthController {
   @Get()
-  getHealth() {
+  getHealth(@Query('probe') probe?: string | string[]) {
+    const selectedProbe = resolveHealthProbe(probe);
+
     return {
       status: 'ok',
       service: 'backend-academy',
+      probe: selectedProbe,
       timestamp: new Date().toISOString(),
     };
   }
